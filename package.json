@@ -1,8 +1,1 @@
-{
-  "name": "telecharsai-discord",
-  "version": "1.0.0",
-  "main": "index.js",
-  "dependencies": {
-    "detritus-client": "^1.0.0"
-  }
-}
+{"name":"telecharsai-discord","version":"1.0.0","main":"index.js","dependencies":{"detritus-client":"^0.8.3"}}
