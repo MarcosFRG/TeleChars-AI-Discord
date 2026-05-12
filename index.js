@@ -124,6 +124,7 @@ function createClient(token, username) {
     client.on('interactionCreate', async ({ interaction }) => {
         if (interaction.type === 2) {
             await interaction.respond({ type: 5 });
+
             const authorId = interaction.member ? interaction.member.id : interaction.user.id;
             const authorUsername = interaction.member ? interaction.member.username : interaction.user.username;
             const authorName = await getUserGlobalName(client, authorId);
