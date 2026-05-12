@@ -1,4 +1,5 @@
 const { ShardClient } = require('detritus-client');
+require('dotenv').config();
 const botsConfig = require('./bots.json');
 
 const BOTS = botsConfig.map(bot => ({
