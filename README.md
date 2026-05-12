@@ -12,8 +12,9 @@ A Discord bot that connects your [TeleChars AI](https://telecharsai.x10.mx/docs)
 * **Message forwarding** – sends every non‑bot Discord message (including replies) to TeleChars AI.
 * **Slash command sync** – automatically fetches your telecharbot’s commands from TeleChars AI and registers them as Discord slash commands. Refreshes every **24 hours**.
 * **Reply context** – includes the referenced message when a user replies, so the telecharbot can understand the conversation.
+* **Global name resolution** – resolves each user’s server‑independent `global_name` (or falls back to their username) for a consistent identity in TeleChars AI.
 * **Channel & guild name caching** – reduces API calls to Discord for better performance.
-* **Multi‑bot support** – run multiple telecharbots (with different tokens) from a single process.
+* **Multi‑bot support** – add as many bots as you like in the configuration file.
 * **Low cache footprint** – all Discord cache limits are set to `0` to minimise memory usage.
 
 ---
@@ -36,15 +37,14 @@ A Discord bot that connects your [TeleChars AI](https://telecharsai.x10.mx/docs)
 ```
 npm install
 ```
-3. Edit `index.js` and replace the placeholder values in the `BOTS` array:
+3. Configure your bot in `bots.json`. The token is read from an environment variable for security:
 ```
-const BOTS = [
-    {
-        token: 'YOUR_DISCORD_BOT_TOKEN',
-        username: 'your-telecharbot-username'
-    }
-];
+[
+  { "token": "$DISCORD_TOKEN_ENV", "username": "tu_telecharbot" }
+]
 ```
+   * Set the environment variable `DISCORD_TOKEN_ENV` to your Discord bot token.
+   * If you prefer a plain token (not recommended), simply write it directly in place of `$DISCORD_TOKEN_ENV`.
 4. Start the bot:
 ```
 node index.js
@@ -54,16 +54,16 @@ node index.js
 
 ## ⚙️ Configuration
 
-The bot is configured entirely through the `BOTS` array at the top of `index.js`.
+The bot reads its configuration entirely from `bots.json` – an array of objects with the following fields:
 
 | Field | Description |
 |---|---|
-| `token` | Your Discord bot token |
-| `username` | The **unique username** of your telecharbot on TeleChars AI |
+| `token` | Discord bot token. If it starts with `$`, the rest is treated as an environment variable name (e.g. `$DISCORD_TOKEN_ENV` becomes `process.env.DISCORD_TOKEN_ENV`). |
+| `username` | The **unique username** of your telecharbot on TeleChars AI. |
 
-You can add **multiple bots** by adding more entries to the array. Each entry will create its own shard client.
+Add multiple objects to the array to run multiple bots simultaneously; each will create its own shard client.
 
-> ⚠️ **Security:** Hard‑coding tokens is not recommended for production. Consider using environment variables or a configuration file instead.
+> ⚠️ **Security:** Never hard‑code tokens in production. Always use environment variables as shown above.
 
 ---
 
@@ -74,18 +74,19 @@ You can add **multiple bots** by adding more entries to the array. Each entry wi
 
 2. **Message Handling**  
    Every time a user sends a message in a channel the bot can see, the bot builds a payload that includes:
-   * Author ID, username, message content
+   * Author ID, global name (or username), message content
    * Channel & (optional) guild names
    * Reply reference (if any)
    * The Discord bot token for authentication
 
+   The author’s global name is obtained from Discord’s `global_name` field (falling back to `username`), and the result is cached for performance.  
    This payload is sent to `https://api.telecharsai.workers.dev/{username}/discord`. TeleChars AI processes it and, if configured, generates a response back to Discord using the bot’s token.
 
 3. **Interaction Handling**  
    When a user uses a slash command, the bot immediately acknowledges it (type‑5 deferred response) and sends a similar payload with the command name and interaction token.
 
 4. **Caching**  
-   Channel and guild names are fetched once and stored in a simple `Map`, keyed by client user ID and ID. This avoids repeated REST calls for the same entities.
+   Channel names, guild names, and user global names are fetched once and stored in simple `Map` caches, keyed by client user ID and the entity’s ID. This avoids repeated REST calls for the same entities.
 
 ---
 
@@ -116,8 +117,9 @@ Un bot de Discord que conecta tu telecharbot de [TeleChars AI](https://telechars
 * **Reenvío de mensajes** – envía cada mensaje no‑bot de Discord (incluyendo respuestas) a TeleChars AI.
 * **Sincronización de comandos slash** – obtiene automáticamente los comandos de tu telecharbot desde TeleChars AI y los registra como comandos slash en Discord. Se actualiza cada **24 horas**.
 * **Contexto de respuesta** – incluye el mensaje referenciado cuando un usuario responde, para que el telecharbot entienda la conversación.
+* **Resolución de nombres globales** – obtiene para cada usuario el `global_name` (independiente del servidor) o, en su defecto, el nombre de usuario, manteniendo una identidad coherente en TeleChars AI.
 * **Caché de nombres de canales y servidores** – reduce las llamadas a la API de Discord para mejorar el rendimiento.
-* **Soporte multi‑bot** – ejecuta varios telecharbots (con diferentes tokens) desde un único proceso.
+* **Soporte multi‑bot** – añade cuantos bots necesites en el archivo de configuración.
 * **Huella de caché mínima** – todos los límites de caché de Discord están en `0` para minimizar el uso de memoria.
 
 ---
@@ -140,15 +142,14 @@ Un bot de Discord que conecta tu telecharbot de [TeleChars AI](https://telechars
 ```
 npm install
 ```
-3. Edita `index.js` y reemplaza los valores de ejemplo en el arreglo `BOTS`:
+3. Configura tu bot en `bots.json`. El token se lee desde una variable de entorno por seguridad:
 ```
-const BOTS = [
-    {
-        token: 'TU_TOKEN_DE_DISCORD',
-        username: 'nombre-de-usuario-de-tu-telecharbot'
-    }
-];
+[
+  { "token": "$DISCORD_TOKEN_ENV", "username": "tu_telecharbot" }
+]
 ```
+   * Define la variable de entorno `DISCORD_TOKEN_ENV` con el token de tu bot de Discord.
+   * Si prefieres escribir el token directamente (no recomendado), reemplaza `$DISCORD_TOKEN_ENV` por el valor real.
 4. Inicia el bot:
 ```
 node index.js
@@ -158,16 +159,16 @@ node index.js
 
 ## ⚙️ Configuración
 
-El bot se configura completamente a través del arreglo `BOTS` al inicio de `index.js`.
+El bot lee toda su configuración desde `bots.json`, un arreglo de objetos con los siguientes campos:
 
 | Campo | Descripción |
 |---|---|
-| `token` | Tu token de bot de Discord |
-| `username` | El **nombre de usuario único** de tu telecharbot en TeleChars AI |
+| `token` | Token del bot de Discord. Si comienza con `$`, el resto se interpreta como el nombre de una variable de entorno (ej. `$DISCORD_TOKEN_ENV` se convierte en `process.env.DISCORD_TOKEN_ENV`). |
+| `username` | El **nombre de usuario único** de tu telecharbot en TeleChars AI. |
 
-Puedes añadir **varios bots** agregando más entradas al arreglo. Cada entrada crea su propio cliente shard.
+Añade múltiples objetos al arreglo para ejecutar varios bots a la vez; cada uno creará su propio cliente shard.
 
-> ⚠️ **Seguridad:** No se recomienda incluir los tokens directamente en el código para entornos de producción. Considera usar variables de entorno o un archivo de configuración.
+> ⚠️ **Seguridad:** Nunca escribas tokens directamente en el código en producción. Emplea siempre variables de entorno como se muestra.
 
 ---
 
@@ -178,18 +179,19 @@ Puedes añadir **varios bots** agregando más entradas al arreglo. Cada entrada 
 
 2. **Manejo de mensajes**  
    Cada vez que un usuario envía un mensaje en un canal donde el bot tiene visibilidad, el bot construye una carga útil que incluye:
-   * ID del autor, nombre de usuario, contenido del mensaje
+   * ID del autor, nombre global (o nombre de usuario), contenido del mensaje
    * Nombres del canal y (opcional) servidor
    * Referencia de respuesta (si existe)
    * El token de Discord del bot para autenticación
 
+   El nombre global del autor se obtiene del campo `global_name` de Discord (cayendo a `username` si no existe) y se almacena en caché para mejorar el rendimiento.  
    Esta carga se envía a `https://api.telecharsai.workers.dev/{username}/discord`. TeleChars AI la procesa y, si está configurado, genera una respuesta hacia Discord usando el token del bot.
 
 3. **Manejo de interacciones**  
    Cuando un usuario usa un comando slash, el bot lo reconoce inmediatamente (respuesta diferida tipo 5) y envía una carga similar con el nombre del comando y el token de interacción.
 
 4. **Caché**  
-   Los nombres de canales y servidores se obtienen una vez y se almacenan en un `Map` simple, usando como clave el ID del usuario del cliente y el ID de la entidad. Así se evitan llamadas REST repetitivas para los mismos datos.
+   Los nombres de canales, servidores y nombres globales de usuarios se obtienen una sola vez y se guardan en cachés simples (`Map`), usando como clave el ID del cliente y el ID de la entidad. Así se evitan llamadas REST repetitivas.
 
 ---
 
