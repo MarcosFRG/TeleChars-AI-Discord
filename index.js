@@ -14,6 +14,30 @@ const channelNameCache = new Map();
 const guildNameCache = new Map();
 const globalNameCache = new Map();
 
+let requestQueue = [];
+let isProcessing = false;
+
+function enqueueRequest(fn) {
+    return new Promise((resolve, reject) => {
+        requestQueue.push({ fn, resolve, reject });
+        processQueue();
+    });
+}
+
+function processQueue() {
+    if (isProcessing) return;
+    if (requestQueue.length === 0) return;
+    isProcessing = true;
+    const { fn, resolve, reject } = requestQueue.shift();
+    fn()
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+            isProcessing = false;
+            processQueue();
+        });
+}
+
 async function getChannelName(client, channelId) {
     const key = `${client.userId}:${channelId}`;
     if (channelNameCache.has(key)) return channelNameCache.get(key);
@@ -81,7 +105,7 @@ function convertFieldsToOptions(fields) {
 
 async function updateCommands(client, username) {
     try {
-        const response = await fetch(`${INFO_URL_BASE}/${username}`);
+        const response = await enqueueRequest(() => fetch(`${INFO_URL_BASE}/${username}`));
         const data = await response.json();
         const botName = data.name;
         const commands = data.commands.map(cmd => {
