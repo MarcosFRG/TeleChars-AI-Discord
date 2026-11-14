@@ -12,12 +12,48 @@ const BOTS = botsConfig.map(bot => ({
   presence: bot.presence || null
 })).filter(b => b.token);
 
-const API_URL_BASE = 'https://api.telecharsai.workers.dev';
-const INFO_URL_BASE = 'https://telecharsai.optikl.ink/info';
+const API_URL = 'http://92.119.165.177:6213';
+const API_URL_BASE = `${API_URL}/api`;
+const INFO_URL_BASE = `${API_URL}/info`;
 
-const channelNameCache = new Map();
-const guildNameCache = new Map();
-const globalNameCache = new Map();
+class TTLCache {
+  constructor(maxSize, ttlMs) {
+    this.map = new Map();
+    this.maxSize = maxSize;
+    this.ttlMs = ttlMs;
+  }
+  _expired(e) { return Date.now() - e.t > this.ttlMs; }
+  has(k) {
+    const e = this.map.get(k);
+    if (!e) return false;
+    if (this._expired(e)) { this.map.delete(k); return false; }
+    return true;
+  }
+  get(k) {
+    if (!this.has(k)) return undefined;
+    const e = this.map.get(k);
+    this.map.delete(k); this.map.set(k, e);
+    return e.v;
+  }
+  set(k, v) {
+    if (this.map.has(k)) this.map.delete(k);
+    this.map.set(k, { v, t: Date.now() });
+    while (this.map.size > this.maxSize) this.map.delete(this.map.keys().next().value);
+  }
+}
+
+const channelNameCache = new TTLCache(5e3, 24 * 36e5);
+const guildNameCache   = new TTLCache(2e3, 24 * 36e5);
+const globalNameCache  = new TTLCache(8e3, 6 * 36e5);
+
+const inFlight = new Map();
+
+function dedup(key, fn) {
+  if (inFlight.has(key)) return inFlight.get(key);
+  const p = fn().finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
 
 let requestQueue = [];
 let isProcessing = false;
@@ -41,50 +77,66 @@ function processQueue() {
 }
 
 async function getChannelName(client, channelId) {
-  const key = `${client.userId}:${channelId}`;
-  if (channelNameCache.has(key)) return channelNameCache.get(key);
-  try {
-    const ch = await client.rest.request({ method: 'GET', path: `/channels/${channelId}` });
-    const name = ch.name || 'Private';
-    channelNameCache.set(key, name);
-    return name;
-  } catch (e) {
-    return null;
-  }
+  if (channelNameCache.has(channelId)) return channelNameCache.get(channelId);
+  return dedup(`ch:${channelId}`, async () => {
+    try {
+      const ch = await client.rest.request({ method: 'GET', path: `/channels/${channelId}` });
+      const name = ch.name || 'Private';
+      channelNameCache.set(channelId, name);
+      return name;
+    } catch {
+      return null;
+    }
+  });
 }
 
 async function getGuildName(client, guildId) {
-  const key = `${client.userId}:${guildId}`;
-  if (guildNameCache.has(key)) return guildNameCache.get(key);
-  try {
-    const guild = await client.rest.request({ method: 'GET', path: `/guilds/${guildId}` });
-    guildNameCache.set(key, guild.name);
-    return guild.name;
-  } catch (e) {
-    return null;
-  }
+  if (guildNameCache.has(guildId)) return guildNameCache.get(guildId);
+  return dedup(`gu:${guildId}`, async () => {
+    try {
+      const guild = await client.rest.request({ method: 'GET', path: `/guilds/${guildId}` });
+      guildNameCache.set(guildId, guild.name);
+      return guild.name;
+    } catch {
+      return null;
+    }
+  });
 }
 
 async function getUserGlobalName(client, userId) {
-  const key = `${client.userId}:${userId}`;
-  if (globalNameCache.has(key)) return globalNameCache.get(key);
-  try {
-    const user = await client.rest.request({ method: 'GET', path: `/users/${userId}` });
-    const name = user.global_name || user.username;
-    globalNameCache.set(key, name);
-    return name;
-  } catch (e) {
-    return null;
+  if (globalNameCache.has(userId)) return globalNameCache.get(userId);
+  return dedup(`us:${userId}`, async () => {
+    try {
+      const user = await client.rest.request({ method: 'GET', path: `/users/${userId}` });
+      const name = user.global_name || user.username;
+      globalNameCache.set(userId, name);
+      return name;
+    } catch {
+      return null;
+    }
+  });
+}
+
+async function getDeferredMessageId(applicationId, interactionToken) {
+  const delays = [100, 200, 400, 800, 1600];
+  for (const delay of delays) {
+    try {
+      const r = await fetch(`https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`);
+      if (r.ok) {
+        const msg = await r.json();
+        if (msg && msg.id) return msg.id;
+      }
+    } catch {}
+    await new Promise(res => setTimeout(res, delay));
   }
+  return 0;
 }
 
 function downloadFile(url) {
   return new Promise((resolve, reject) => {
     const protocol = url.startsWith('https') ? https : http;
     const req = protocol.get(url, { headers: { 'User-Agent': 'TeleCharBots/1.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return downloadFile(res.headers.location).then(resolve).catch(reject);
-      }
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) return downloadFile(res.headers.location).then(resolve).catch(reject);
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => resolve(Buffer.concat(chunks)));
@@ -135,31 +187,23 @@ async function buildAttachmentPayload(attachment) {
   const rawContentType = attachment.contentType || attachment.content_type || 'application/octet-stream';
   const size = attachment.size || attachment.fileSize || 0;
 
-  const contentType = isImageAttachment(filename, rawContentType)
-    ? getImageMimeType(filename, rawContentType)
-    : rawContentType;
+  const contentType = isImageAttachment(filename, rawContentType) ? getImageMimeType(filename, rawContentType) : rawContentType;
 
   try {
     const fileBuffer = await downloadFile(url);
     const file_unique_id = getFileUniqueId(fileBuffer);
 
-    const document = {
-      file_id: url,
-      file_unique_id,
-      file_name: filename,
-      mime_type: contentType,
-      file_size: size
-    };
+    const document = {file_id: url, file_unique_id, file_name: filename, mime_type: contentType, file_size: size};
 
     if (isGifAttachment(filename, contentType)) {
       try {
         document.thumb = (await sharp(fileBuffer, { pages: 1 }).png().toBuffer()).toString('base64');
         document.thumb_mime = 'image/png';
-      } catch (e) {}
+      } catch {}
     }
 
     return document;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -171,7 +215,7 @@ function buildBasePayload(client, authorId, authorName, authorUsername, channelI
       message_id: messageId,
       from: { id: authorId, is_bot: false, first_name: authorName, username: authorUsername },
       chat: { id: channelId, type: guildId ? 'group' : 'private' },
-      date: Math.floor(Date.now() / 1e3),
+      date: parseInt(Date.now() / 1e3),
       bot_uid: client.userId
     },
     token: client.token
@@ -227,11 +271,7 @@ async function updateCommands(client, username) {
     const botName = data.name;
 
     const commands = data.commands.map(cmd => {
-      const command = {
-        name: cmd.name,
-        description: cmd.desc.replace(/{ai}/gi, botName),
-        dm_permission: true
-      };
+      const command = {name: cmd.name, description: cmd.desc.replace(/{ai}/gi, botName), type: 1, contexts: [0, 1, 2], integration_types: [0, 1]};
 
       const fields = convertFieldsToOptions(cmd.fields);
 
@@ -240,28 +280,17 @@ async function updateCommands(client, username) {
       return command;
     });
 
-    await client.rest.request({
-      method: 'PUT',
-      path: `/applications/${client.userId}/commands`,
-      body: commands
-    });
-  } catch (error) {}
+    await client.rest.request({method: 'PUT', path: `/applications/${client.userId}/commands`, body: commands});
+  } catch {}
 }
 
 function createClient(token, username, presence) {
   const client = new ShardClient(token, {
     gateway: { intents: 33280 | 4096 },
-    cache: {
-      messages: { limit: 0 },
-      users: { limit: 0 },
-      members: { limit: 0 },
-      guilds: { limit: 0 },
-      channels: { limit: 0 },
-      emojis: { limit: 0 },
-      roles: { limit: 0 },
-      voiceStates: { limit: 0 }
-    }
+    cache: { messages: { limit: 0 }, users: { limit: 0 }, members: { limit: 0 }, guilds: { limit: 0 }, channels: { limit: 0 }, emojis: { limit: 0 }, roles: { limit: 0 }, voiceStates: { limit: 0 } }
   });
+
+  let commandsInterval = null;
 
   client.on('gatewayReady', async () => {
     if (presence) {
@@ -270,55 +299,64 @@ function createClient(token, username, presence) {
         if (presence.status) presencePayload.status = presence.status;
         if (presence.activities && Array.isArray(presence.activities)) presencePayload.activities = presence.activities;
         await client.gateway.setPresence(presencePayload);
-      } catch (e) {}
+      } catch {}
     }
 
     await updateCommands(client, username);
-    setInterval(() => updateCommands(client, username), 24 * 60 * 60 * 1e3);
+
+    if (commandsInterval) clearInterval(commandsInterval);
+    commandsInterval = setInterval(() => updateCommands(client, username), 86400);
   });
 
   client.on('interactionCreate', async ({ interaction }) => {
-    if (interaction.type === 2) {
+    if (interaction.type == 2) {
       await interaction.respond({ type: 5 });
+
+      const authorId = interaction.member ? interaction.member.id : interaction.user.id;
+      const authorUsername = interaction.member ? interaction.member.username : interaction.user.username;
+
+      const [authorName, deferredMessageId, channelName, groupName] = await Promise.all([getUserGlobalName(client, authorId), getDeferredMessageId(client.userId, interaction.token), getChannelName(client, interaction.channelId), interaction.guildId ? getGuildName(client, interaction.guildId) : Promise.resolve(null)]);
+
+      const payload = buildBasePayload(client, authorId, authorName, authorUsername, interaction.channelId, interaction.guildId, deferredMessageId || interaction.id);
+
+      const args = extractArguments(interaction.data.options);
+
+      payload.command = {command: interaction.data.name.trim(), command_id: interaction.id, client_id: client.userId, arguments: args};
+
+      payload.int_token = interaction.token;
+
+      payload.message.chat.name = channelName;
+      if (groupName) payload.message.chat.group_name = groupName;
+
+      await fetch(`${API_URL_BASE}/${username}/discord`, {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
+    } else if (interaction.type == 3) {
+      try {
+        await interaction.respond({ type: 6 });
+      } catch {
+        return;
+      }
 
       const authorId = interaction.member ? interaction.member.id : interaction.user.id;
       const authorUsername = interaction.member ? interaction.member.username : interaction.user.username;
       const authorName = await getUserGlobalName(client, authorId);
 
-      const payload = buildBasePayload(
-        client,
-        authorId,
-        authorName,
-        authorUsername,
-        interaction.channelId,
-        interaction.guildId,
-        interaction.id
-      );
+      const payload = buildBasePayload(client, authorId, authorName, authorUsername, interaction.channelId, interaction.guildId, interaction.message ? interaction.message.id : 0);
 
-      const args = extractArguments(interaction.data.options);
+      let cid = '';
+      if (interaction.data && interaction.data.custom_id) cid = interaction.data.custom_id;
+      else if (interaction.customId) cid = interaction.customId;
+      else if (interaction.data && interaction.data.customId) cid = interaction.data.customId;
 
-      payload.command = {
-        command: interaction.data.name.trim(),
-        command_id: interaction.id,
-        client_id: client.userId,
-        arguments: args
-      };
-
+      payload.command = {command: cid || '', command_id: interaction.id, client_id: client.userId, arguments: {}};
       payload.int_token = interaction.token;
+      payload.callback = {data: cid || '', message_id: interaction.message ? interaction.message.id : 0};
 
-      const [channelName, groupName] = await Promise.all([
-        getChannelName(client, interaction.channelId),
-        interaction.guildId ? getGuildName(client, interaction.guildId) : null
-      ]);
+      const [channelName, groupName] = await Promise.all([getChannelName(client, interaction.channelId), interaction.guildId ? getGuildName(client, interaction.guildId) : null]);
 
       payload.message.chat.name = channelName;
       if (groupName) payload.message.chat.group_name = groupName;
 
-      await fetch(`${API_URL_BASE}/${username}/discord`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      await fetch(`${API_URL_BASE}/${username}/discord`, {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
     }
   });
 
@@ -327,16 +365,7 @@ function createClient(token, username, presence) {
 
     const authorName = await getUserGlobalName(client, message.author.id);
 
-    const payload = buildBasePayload(
-      client,
-      message.author.id,
-      authorName,
-      message.author.username,
-      message.channelId,
-      message.guildId,
-      message.id,
-      message.content
-    );
+    const payload = buildBasePayload(client, message.author.id, authorName, message.author.username, message.channelId, message.guildId, message.id, message.content);
 
     const [channelName, groupName] = await Promise.all([getChannelName(client, message.channelId), message.guildId ? getGuildName(client, message.guildId) : null]);
 
@@ -368,10 +397,7 @@ function createClient(token, username, presence) {
 
     if (message.messageReference) {
       try {
-        const refMsg = await client.rest.request({
-          method: 'GET',
-          path: `/channels/${message.messageReference.channelId || message.channelId}/messages/${message.messageReference.messageId}`
-        });
+        const refMsg = await client.rest.request({method: 'GET', path: `/channels/${message.messageReference.channelId || message.channelId}/messages/${message.messageReference.messageId}`});
 
         const refAuthorName = await getUserGlobalName(client, refMsg.author.id);
 
@@ -387,17 +413,13 @@ function createClient(token, username, presence) {
             id: refMsg.channel_id,
             type: message.guildId ? 'group' : 'private'
           },
-          date: Math.floor(new Date(refMsg.timestamp) / 1e3),
+          date: parseInt(new Date(refMsg.timestamp) / 1e3),
           text: refMsg.content || ''
         };
-      } catch (e) {}
+      } catch {}
     }
 
-    await fetch(`${API_URL_BASE}/${username}/discord`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    await fetch(`${API_URL_BASE}/${username}/discord`, {method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
   });
 
   return client;
