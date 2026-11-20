@@ -1,1 +1,1 @@
-{"name":"telecharsai-discord","version":"1.0.1","main":"index.js","engines":{"node":">=18.17.0 <19.0.0 || >=20.3.0"},"dependencies":{"detritus-client":"^0.17.0-beta.81","dotenv":"^17.4.2","sharp":"^0.34.5"}}
+{"name":"telecharsai-discord","version":"1.0.2","main":"index.js","engines":{"node":">=18.17.0"},"scripts":{"preinstall":"mkdir -p ./.npm-cache || true","start":"node index.js"},"dependencies":{"detritus-client":"0.17.0-beta.81","dotenv":"16.4.5","sharp":"0.33.5"},"overrides":{"detritus-rest":"0.9.0-beta.13","undici":"6.19.2"}}
